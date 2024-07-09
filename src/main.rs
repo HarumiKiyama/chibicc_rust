@@ -12,15 +12,14 @@ fn main() -> Result<(), MyError> {
             info: format!("args error {:?}", args),
         })?;
     }
-    println!(".intel_syntax noprefix");
-    println!(".global main");
-    println!("  main:");
     let arg = &args[0];
+    // Tokenize
     let mut tokens = TokenQueue::tokenizer(&arg)?;
-    let node = Node::expr(&mut tokens)?;
+    // Parse
+    let nodes = Node::program(&mut tokens)?;
+
+    // Traverse the AST to emit assembly
     let code_generator = CodeGenerator::new();
-    code_generator.generate(Some(&node));
-    println!("  pop rax");
-    println!("  ret");
+    code_generator.generate(nodes);
     Ok(())
 }

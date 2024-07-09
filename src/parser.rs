@@ -41,8 +41,24 @@ impl Node {
         }
     }
 
-    pub fn expr(token_queue: &mut TokenQueue) -> ParseResult {
+    // stmt = expr ";"
+    fn stmt(token_queue: &mut TokenQueue) -> ParseResult {
+        let node = Self::expr(token_queue)?;
+        token_queue.expect_op(";")?;
+        Ok(node)
+    }
+
+    fn expr(token_queue: &mut TokenQueue) -> ParseResult {
         Self::equality(token_queue)
+    }
+
+    // program = stmt*
+    pub fn program(token_queue: &mut TokenQueue) -> Result<Vec<Node>, MyError> {
+        let mut nodes = Vec::new();
+        while !token_queue.at_eof() {
+            nodes.push(Self::stmt(token_queue)?);
+        }
+        Ok(nodes)
     }
 
     // equality = relational ("==" relational | "!=" relational)*
@@ -64,17 +80,13 @@ impl Node {
         let mut node = Self::add(token_queue)?;
         loop {
             if token_queue.consume("<")? {
-                node = Self::new_binary(NodeKind::LT, node,
-                     Self::add(token_queue)?);
+                node = Self::new_binary(NodeKind::LT, node, Self::add(token_queue)?);
             } else if token_queue.consume("<=")? {
-                node = Self::new_binary(NodeKind::LE, node, 
-                    Self::add(token_queue)?);
+                node = Self::new_binary(NodeKind::LE, node, Self::add(token_queue)?);
             } else if token_queue.consume(">")? {
-                node = Self::new_binary(NodeKind::LT,
-                     Self::add(token_queue)?, node);
+                node = Self::new_binary(NodeKind::LT, Self::add(token_queue)?, node);
             } else if token_queue.consume(">=")? {
-                node = Self::new_binary(NodeKind::LE,
-                     Self::add(token_queue)?, node);
+                node = Self::new_binary(NodeKind::LE, Self::add(token_queue)?, node);
             } else {
                 return Ok(node);
             }
@@ -86,11 +98,9 @@ impl Node {
         let mut node = Self::mul(token_queue)?;
         loop {
             if token_queue.consume("+")? {
-                node = Self::new_binary(NodeKind::ADD, node,
-                     Self::mul(token_queue)?);
+                node = Self::new_binary(NodeKind::ADD, node, Self::mul(token_queue)?);
             } else if token_queue.consume("-")? {
-                node = Self::new_binary(NodeKind::SUB, node, 
-                    Self::mul(token_queue)?);
+                node = Self::new_binary(NodeKind::SUB, node, Self::mul(token_queue)?);
             } else {
                 return Ok(node);
             }
@@ -101,11 +111,9 @@ impl Node {
         let mut node = Self::unary(token_queue)?;
         loop {
             if token_queue.consume("*")? {
-                node = Self::new_binary(NodeKind::MUL, node,
-                     Self::unary(token_queue)?);
+                node = Self::new_binary(NodeKind::MUL, node, Self::unary(token_queue)?);
             } else if token_queue.consume("/")? {
-                node = Self::new_binary(NodeKind::DIV, node, 
-                    Self::unary(token_queue)?);
+                node = Self::new_binary(NodeKind::DIV, node, Self::unary(token_queue)?);
             } else {
                 return Ok(node);
             }
@@ -119,8 +127,7 @@ impl Node {
             return Self::unary(token_queue);
         }
         if token_queue.consume("-")? {
-            let node = Self::new_binary(NodeKind::SUB,
-                 Self::new_num(0), Self::unary(token_queue)?);
+            let node = Self::new_binary(NodeKind::SUB, Self::new_num(0), Self::unary(token_queue)?);
             return Ok(node);
         }
         return Self::primary(token_queue);
@@ -130,7 +137,7 @@ impl Node {
     fn primary(token_queue: &mut TokenQueue) -> ParseResult {
         if token_queue.consume("(")? {
             let node = Self::expr(token_queue)?;
-            token_queue.expect(")")?;
+            token_queue.expect_op(")")?;
             return Ok(node);
         }
         Ok(Self::new_num(token_queue.except_num()?))

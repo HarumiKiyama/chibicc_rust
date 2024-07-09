@@ -28,6 +28,15 @@ impl TokenQueue {
             })?,
         }
     }
+    pub fn expect_op(&mut self, op: &str) -> Result<(), MyError> {
+        if self.consume(op)? {
+            Ok(())
+        } else {
+            Err(MyError {
+                info: format!("expected '{}'", op),
+            })
+        }
+    }
 
     pub fn at_eof(&self) -> bool {
         self[0] == Token::TkEof
@@ -43,15 +52,6 @@ impl TokenQueue {
                 Ok(true)
             }
             _ => Ok(false),
-        }
-    }
-    pub fn expect(&mut self, op: &str) -> Result<(), MyError> {
-        if self.consume(op)? {
-            Ok(())
-        } else {
-            Err(MyError {
-                info: format!("expected '{}'", op),
-            })
         }
     }
 
@@ -109,7 +109,7 @@ impl TokenQueue {
             return None;
         };
         match c {
-            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' => {
+            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' | ';' => {
                 *i += 1;
                 return Some(c.to_string());
             }
