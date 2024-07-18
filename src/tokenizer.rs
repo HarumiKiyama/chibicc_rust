@@ -4,8 +4,9 @@ use std::ops::Index;
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    TkReserved { raw: String },      // Keywords or punctuators
+    TkReserved { keyword: String },  // Keywords or punctuators
     TkNum { raw: String, val: i32 }, // Integer literals
+    TkIdent { name: String },        // Identifiers
     TkEof,                           // End-of-file markers
 }
 
@@ -28,8 +29,8 @@ impl TokenQueue {
             })?,
         }
     }
-    pub fn expect_op(&mut self, op: &str) -> Result<(), MyError> {
-        if self.consume(op)? {
+    pub fn expect_reserve(&mut self, op: &str) -> Result<(), MyError> {
+        if self.consume_reserve(op)? {
             Ok(())
         } else {
             Err(MyError {
@@ -42,17 +43,52 @@ impl TokenQueue {
         self[0] == Token::TkEof
     }
 
-    pub fn consume(&mut self, op: &str) -> Result<bool, MyError> {
+    pub fn consume_reserve(&mut self, op: &str) -> Result<bool, MyError> {
         match self.0.front() {
             None => Err(MyError {
                 info: format!("need {}, but no token left", op),
             }),
-            Some(Token::TkReserved { raw }) if raw == op => {
+            Some(Token::TkReserved { keyword: raw }) if raw == op => {
                 self.0.pop_front();
                 Ok(true)
             }
             _ => Ok(false),
         }
+    }
+
+    pub fn consume_ident(&mut self) -> Result<Option<String>, MyError> {
+        if self.0.is_empty() {
+            return Err(MyError {
+                info: "no token left".to_string(),
+            });
+        }
+        let found = {
+            match self.0.front() {
+                Some(Token::TkIdent { .. }) => true,
+                _ => false,
+            }
+        };
+        if found {
+            let Some(Token::TkIdent { name }) = self.0.pop_front() else {
+                Err(MyError {
+                    info: "pop token error".to_string(),
+                })?
+            };
+            Ok(Some(name))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn is_alpha(c: char) -> bool {
+        match c {
+            'a'..='z' | 'A'..='Z' | '_' => true,
+            _ => false,
+        }
+    }
+
+    fn is_alpha_num(c: char) -> bool {
+        Self::is_alpha(c) || c.is_digit(10)
     }
 
     fn skip_whitespace(&self, s: &str, i: &mut usize) {
@@ -88,10 +124,16 @@ impl TokenQueue {
         Some(rv)
     }
 
-    fn extract_op(&self, s: &str, i: &mut usize) -> Option<String> {
+    fn extract_reserve(&self, s: &str, i: &mut usize) -> Option<String> {
         if *i >= s.len() {
             return None;
         }
+
+        if *i + 5 < s.len() && &s[*i..*i + 6] == "return" {
+            *i += 6;
+            return Some("return".to_string());
+        }
+
         if *i + 1 < s.len() {
             let double_rv = match &s[*i..*i + 2] {
                 "==" => Some("==".to_string()),
@@ -109,7 +151,7 @@ impl TokenQueue {
             return None;
         };
         match c {
-            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' | ';' => {
+            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' | ';' | '=' => {
                 *i += 1;
                 return Some(c.to_string());
             }
@@ -117,22 +159,51 @@ impl TokenQueue {
         }
     }
 
+    fn extract_ident(&self, s: &str, i: &mut usize) -> Option<String> {
+        let Some(c) = s.chars().nth(*i) else {
+            return None;
+        };
+        if !Self::is_alpha(c) {
+            return None;
+        }
+        let mut rv = c.to_string();
+        *i += 1;
+        let mut chars = s.chars().skip(*i);
+        while let Some(c) = chars.next() {
+            if Self::is_alpha_num(c) {
+                rv.push(c);
+                *i += 1;
+            } else {
+                break;
+            }
+        }
+        if rv.is_empty() {
+            None
+        } else {
+            Some(rv)
+        }
+    }
+
     fn generate_token(&mut self, s: &str, i: &mut usize) -> Result<(), MyError> {
         self.skip_whitespace(s, i);
-        let num = self.extract_digit(s, i);
-        if num.is_some() {
-            let n = num.unwrap();
+
+        if let Some(num) = self.extract_digit(s, i) {
             self.0.push_back(Token::TkNum {
-                val: n.parse::<i32>().map_err(|e| MyError {
+                val: num.parse::<i32>().map_err(|e| MyError {
                     info: e.to_string(),
                 })?,
-                raw: n,
+                raw: num,
             });
             return Ok(());
         }
-        let op = self.extract_op(s, i);
-        if op.is_some() {
-            self.0.push_back(Token::TkReserved { raw: op.unwrap() });
+
+        if let Some(reserve) = self.extract_reserve(s, i) {
+            self.0.push_back(Token::TkReserved { keyword: reserve });
+            return Ok(());
+        }
+
+        if let Some(ident) = self.extract_ident(s, i) {
+            self.0.push_back(Token::TkIdent { name: ident });
             return Ok(());
         }
 
@@ -140,7 +211,13 @@ impl TokenQueue {
             Ok(())
         } else {
             Err(MyError {
-                info: format!("unexpected character: {:?}, at {}", s.chars().nth(*i), *i),
+                info: format!(
+                    "unexpected character: {:?}, in {} at {}, token queue: {:?}",
+                    s.chars().nth(*i),
+                    s,
+                    *i,
+                    self.0
+                ),
             })
         }
     }
@@ -180,7 +257,7 @@ mod test {
                 assert_eq!(
                     token_queue[1],
                     Token::TkReserved {
-                        raw: "+".to_string()
+                        keyword: "+".to_string()
                     }
                 );
                 assert_eq!(
@@ -213,7 +290,7 @@ mod test {
                 assert_eq!(
                     token_queue[1],
                     Token::TkReserved {
-                        raw: "+".to_string()
+                        keyword: "+".to_string()
                     }
                 );
                 assert_eq!(
@@ -243,21 +320,21 @@ mod test {
                             val: 12
                         },
                         Token::TkReserved {
-                            raw: "+".to_string()
+                            keyword: "+".to_string()
                         },
                         Token::TkNum {
                             raw: "34".to_string(),
                             val: 34
                         },
                         Token::TkReserved {
-                            raw: "-".to_string()
+                            keyword: "-".to_string()
                         },
                         Token::TkNum {
                             raw: "5".to_string(),
                             val: 5
                         },
                         Token::TkReserved {
-                            raw: "+".to_string()
+                            keyword: "+".to_string()
                         },
                         Token::TkNum {
                             raw: "2".to_string(),
@@ -286,14 +363,14 @@ mod test {
                             val: 3
                         },
                         Token::TkReserved {
-                            raw: "+".to_string()
+                            keyword: "+".to_string()
                         },
                         Token::TkNum {
                             raw: "1".to_string(),
                             val: 1
                         },
                         Token::TkReserved {
-                            raw: "*".to_string()
+                            keyword: "*".to_string()
                         },
                         Token::TkNum {
                             raw: "2".to_string(),
@@ -311,37 +388,82 @@ mod test {
 
     #[test]
     fn test_tokenizer_double_op() {
-        let token_queue = TokenQueue::tokenizer("3+1==2");
-        match token_queue {
-            Ok(token_queue) => {
-                assert_eq!(
-                    token_queue.0,
-                    vec![
-                        Token::TkNum {
-                            raw: "3".to_string(),
-                            val: 3
-                        },
-                        Token::TkReserved {
-                            raw: "+".to_string()
-                        },
-                        Token::TkNum {
-                            raw: "1".to_string(),
-                            val: 1
-                        },
-                        Token::TkReserved {
-                            raw: "==".to_string()
-                        },
-                        Token::TkNum {
-                            raw: "2".to_string(),
-                            val: 2
-                        },
-                        Token::TkEof
-                    ]
-                );
-            }
-            Err(e) => {
-                panic!("{:?}", e);
-            }
-        }
+        let token_queue = TokenQueue::tokenizer("3+1==2").expect("tokenizer error");
+        assert_eq!(
+            token_queue.0,
+            vec![
+                Token::TkNum {
+                    raw: "3".to_string(),
+                    val: 3
+                },
+                Token::TkReserved {
+                    keyword: "+".to_string()
+                },
+                Token::TkNum {
+                    raw: "1".to_string(),
+                    val: 1
+                },
+                Token::TkReserved {
+                    keyword: "==".to_string()
+                },
+                Token::TkNum {
+                    raw: "2".to_string(),
+                    val: 2
+                },
+                Token::TkEof
+            ]
+        );
+    }
+    #[test]
+    fn test_tokenizer_return_assign() {
+        let token_queue =
+            TokenQueue::tokenizer("foo123=3; bar=5; return foo123+bar;").expect("tokenizer error");
+        assert_eq!(
+            token_queue.0,
+            vec![
+                Token::TkIdent {
+                    name: "foo123".to_string()
+                },
+                Token::TkReserved {
+                    keyword: "=".to_string()
+                },
+                Token::TkNum {
+                    raw: "3".to_string(),
+                    val: 3
+                },
+                Token::TkReserved {
+                    keyword: ";".to_string()
+                },
+                Token::TkIdent {
+                    name: "bar".to_string()
+                },
+                Token::TkReserved {
+                    keyword: "=".to_string()
+                },
+                Token::TkNum {
+                    raw: "5".to_string(),
+                    val: 5
+                },
+                Token::TkReserved {
+                    keyword: ";".to_string()
+                },
+                Token::TkReserved {
+                    keyword: "return".to_string()
+                },
+                Token::TkIdent {
+                    name: "foo123".to_string()
+                },
+                Token::TkReserved {
+                    keyword: "+".to_string()
+                },
+                Token::TkIdent {
+                    name: "bar".to_string()
+                },
+                Token::TkReserved {
+                    keyword: ";".to_string()
+                },
+                Token::TkEof
+            ]
+        );
     }
 }
