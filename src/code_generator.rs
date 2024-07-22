@@ -1,14 +1,24 @@
-use crate::{Node, NodeKind, Parser};
+use crate::{Node, Parser};
 
 pub struct CodeGenerator {
     depth: usize,
     parser: Parser,
+    counter: usize,
 }
 
 impl CodeGenerator {
     pub fn new(parser: Parser) -> CodeGenerator {
-        Self { depth: 0, parser }
+        Self {
+            depth: 0,
+            counter: 1,
+            parser,
+        }
     }
+    fn count(&mut self) -> usize {
+        self.counter += 1;
+        self.counter
+    }
+
     fn push(&mut self) {
         println!("  push %rax");
         self.depth += 1;
@@ -23,91 +33,108 @@ impl CodeGenerator {
         let Some(node) = node else {
             return;
         };
-        if let NodeKind::Var { name } = &node.kind {
+        if let Node::Var { name } = &node {
             let offset = self.parser.locals.get(name).expect("name not found");
-            println!("  lea {}(%rbp), %rax", -(*offset as i32))
+            println!("  lea -{}(%rbp), %rax", *offset)
         }
     }
 
     pub fn generate(&mut self, nodes: Vec<Node>) {
         self.parser.assign_lvar_offset();
-        println!(".global main");
+        println!("  .global main");
         println!("main:");
         // prologur
-        println!(" push %rbp");
-        println!(" mov %rsp, %rbp");
-        println!(" sub ${}, %rsp", self.parser.stack_size);
+        println!("  push %rbp");
+        println!("  mov %rsp, %rbp");
+        println!("  sub ${}, %rsp", self.parser.stack_size);
 
         for node in nodes {
             self.gen_stmt(Some(&node));
             assert!(self.depth == 0);
         }
         println!(".L.return:");
-        println!(" mov %rbp, %rsp");
-        println!(" pop %rbp");
-        println!(" ret");
+        println!("  mov %rbp, %rsp");
+        println!("  pop %rbp");
+        println!("  ret");
     }
     // generate code for a given node
     pub fn gen_expr(&mut self, node: Option<&Node>) {
         let Some(node) = node else {
             return;
         };
-        match node.kind {
-            NodeKind::Num { val } => {
+        match node {
+            Node::Num { val } => {
                 println!("  mov ${}, %rax", val);
                 return;
             }
-            NodeKind::Neg => {
-                self.gen_expr(node.lhs.as_deref());
+            Node::Neg { lhs } => {
+                self.gen_expr(Some(lhs.as_ref()));
                 println!("  neg %rax");
                 return;
             }
-            NodeKind::Var { .. } => {
+            Node::Var { .. } => {
                 self.gen_addr(Some(node));
                 println!("  mov (%rax), %rax");
                 return;
             }
-            NodeKind::Assign => {
-                self.gen_addr(node.lhs.as_deref());
+            Node::Assign { lhs, rhs } => {
+                self.gen_addr(Some(lhs.as_ref()));
                 self.push();
-                self.gen_expr(node.rhs.as_deref());
+                self.gen_expr(Some(rhs.as_ref()));
                 self.pop("rdi");
                 println!(" mov %rax, (%rdi)");
                 return;
             }
             _ => {}
         }
-        self.gen_expr(node.rhs.as_deref());
-        self.push();
-        self.gen_expr(node.lhs.as_deref());
-        self.pop("rdi");
-        match node.kind {
-            NodeKind::Add => {
+        match node {
+            Node::Add { lhs, rhs }
+            | Node::Sub { lhs, rhs }
+            | Node::Mul { lhs, rhs }
+            | Node::Div { lhs, rhs }
+            | Node::Eq { lhs, rhs }
+            | Node::Ne { lhs, rhs }
+            | Node::Lt { lhs, rhs }
+            | Node::Le { lhs, rhs } => {
+                self.gen_expr(Some(rhs.as_ref()));
+                self.push();
+                self.gen_expr(Some(lhs.as_ref()));
+                self.pop("rdi");
+            }
+            _ => {
+                panic!("invalid expression")
+            }
+        }
+        let print_eq = |eq_str: &str| {
+            println!("  cmp %rdi, %rax");
+            println!("{}", eq_str);
+            println!("  movzb %al, %rax");
+        };
+        match node {
+            Node::Add { .. } => {
                 println!("  add %rdi, %rax");
             }
-            NodeKind::Sub => {
+            Node::Sub { .. } => {
                 println!("  sub %rdi, %rax");
             }
-            NodeKind::Mul => {
+            Node::Mul { .. } => {
                 println!("  imul %rdi, %rax");
             }
-            NodeKind::Div => {
+            Node::Div { .. } => {
                 println!("  cqo");
                 println!("  idiv %rdi");
             }
-            NodeKind::Eq | NodeKind::Ne | NodeKind::Lt | NodeKind::Le => {
-                println!("  cmp %rdi, %rax");
-                if node.kind == NodeKind::Eq {
-                    println!("  sete %al");
-                } else if node.kind == NodeKind::Ne {
-                    println!("  setne %al");
-                } else if node.kind == NodeKind::Lt {
-                    println!("  setl %al");
-                } else if node.kind == NodeKind::Le {
-                    println!("  setle %al");
-                }
-                println!("  movzb %al, %rax");
-                return;
+            Node::Eq { .. } => {
+                print_eq("  sete %al");
+            }
+            Node::Ne { .. } => {
+                print_eq("  setne %al");
+            }
+            Node::Lt { .. } => {
+                print_eq("  setl %al");
+            }
+            Node::Le { .. } => {
+                print_eq("  setle %al");
             }
             _ => {
                 panic!("invalid expression")
@@ -115,15 +142,54 @@ impl CodeGenerator {
         }
     }
     fn gen_stmt(&mut self, node: Option<&Node>) {
-        let node = node.expect("node is not None");
-        match node.kind {
-            NodeKind::Return => {
-                self.gen_expr(node.lhs.as_deref());
+        let Some(node) = node else {
+            return;
+        };
+        match node {
+            Node::Return { lhs } => {
+                self.gen_expr(lhs.as_deref());
                 println!("  jmp .L.return");
             }
-            NodeKind::ExprStmt => {
-                self.gen_expr(node.lhs.as_deref());
+            Node::ExprStmt { expr } => {
+                self.gen_expr(Some(expr.as_ref()));
             }
+
+            Node::If { cond, then, els } => {
+                let c = self.count();
+                self.gen_expr(Some(cond.as_ref()));
+                println!("  cmp $0, %rax");
+                println!("  je .L.else.{}", c);
+                self.gen_stmt(then.as_deref());
+                println!("  jmp .L.end.{}", c);
+                println!(".L.else.{}:", c);
+                self.gen_stmt(els.as_deref());
+                println!(".L.end.{}:", c);
+            }
+            Node::For {
+                init,
+                cond,
+                inc,
+                then,
+            } => {
+                let c = self.count();
+                self.gen_stmt(init.as_deref());
+                println!(".L.begin.{}:", c);
+                if cond.is_some() {
+                    self.gen_expr(cond.as_deref());
+                    println!("  cmp $0, %rax");
+                    println!("  je .L.end.{}", c);
+                }
+                self.gen_stmt(then.as_deref());
+                self.gen_expr(inc.as_deref());
+                println!("  jmp .L.begin.{}", c);
+                println!(".L.end.{}:", c);
+            }
+            Node::Block { nodes } => {
+                for node in nodes {
+                    self.gen_stmt(Some(node));
+                }
+            }
+
             _ => {
                 panic!("invalid statement")
             }

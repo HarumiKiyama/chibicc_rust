@@ -13,10 +13,10 @@ fn main() -> Result<(), MyError> {
     }
     let arg = &args[0];
     // Tokenize
-    let mut tokens = TokenQueue::tokenizer(&arg)?;
+    let tokens = TokenQueue::tokenizer(&arg)?;
     // Parse
-    let mut parser = Parser::new();
-    let nodes = parser.program(&mut tokens)?;
+    let mut parser = Parser::new(tokens);
+    let nodes = parser.program()?;
     // Traverse the AST to emit assembly
     let mut generator = CodeGenerator::new(parser);
     generator.generate(nodes);

@@ -3,21 +3,73 @@ use std::collections::{HashMap, VecDeque};
 use crate::{MyError, TokenQueue};
 
 #[derive(PartialEq, Debug)]
-pub enum NodeKind {
-    Add,                  // +
-    Sub,                  // -
-    Mul,                  // *
-    Div,                  // /
-    Neg,                  // unary -
-    Eq,                   // ==
-    Ne,                   // !=
-    Lt,                   // <
-    Le,                   // <=
-    Assign,               // =
-    Return,               // "return"
-    ExprStmt,             // Expression statement
-    Var { name: String }, // Local variable
-    Num { val: i32 },     // Integer
+pub enum Node {
+    Add {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // +
+
+    Sub {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // -
+    Mul {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // *
+    Div {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // /
+    Neg {
+        lhs: Box<Node>,
+    }, // unary -
+    Eq {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // ==
+    Ne {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // !=
+    Lt {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // <
+    Le {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // <=
+    Assign {
+        lhs: Box<Node>,
+        rhs: Box<Node>,
+    }, // =
+    Return {
+        lhs: Option<Box<Node>>,
+    }, // "return"
+    If {
+        cond: Box<Node>,
+        then: Option<Box<Node>>,
+        els: Option<Box<Node>>,
+    }, // "if"
+    For {
+        init: Option<Box<Node>>,
+        cond: Option<Box<Node>>,
+        inc: Option<Box<Node>>,
+        then: Option<Box<Node>>,
+    }, // "for" and "while"
+    Block {
+        nodes: Vec<Node>,
+    }, // { ... }
+    ExprStmt {
+        expr: Box<Node>,
+    }, // Expression statement
+    Var {
+        name: String,
+    }, // Local variable
+    Num {
+        val: i32,
+    }, // Integer
 }
 
 type ParseResult = Result<Node, MyError>;
@@ -28,55 +80,27 @@ pub struct Parser {
     pub locals: VarTable,
     pub locals_dequeue: VecDeque<String>,
     pub stack_size: usize,
-}
-
-#[derive(Debug)]
-pub struct Node {
-    pub kind: NodeKind,         // Node kind
-    pub lhs: Option<Box<Node>>, // Left-hand side
-    pub rhs: Option<Box<Node>>, // Right-hand side
+    pub nodes: Vec<Node>,
+    pub token_queue: TokenQueue,
 }
 
 impl Node {
     fn new_num(val: i32) -> Self {
-        Node {
-            kind: NodeKind::Num { val },
-            lhs: None,
-            rhs: None,
-        }
+        Node::Num { val }
     }
-
-    fn new_binary(kind: NodeKind, lhs: Node, rhs: Node) -> Self {
-        Node {
-            kind,
-            lhs: Some(Box::new(lhs)),
-            rhs: Some(Box::new(rhs)),
-        }
-    }
-
-    fn new_unary(kind: NodeKind, lhs: Node) -> Self {
-        Node {
-            kind,
-            lhs: Some(Box::new(lhs)),
-            rhs: None,
-        }
-    }
-
     fn new_var(name: String) -> Self {
-        Node {
-            kind: NodeKind::Var { name },
-            lhs: None,
-            rhs: None,
-        }
+        Node::Var { name }
     }
 }
 
 impl Parser {
-    pub fn new() -> Self {
+    pub fn new(token_queue: TokenQueue) -> Self {
         Self {
             locals: HashMap::new(),
             locals_dequeue: VecDeque::new(),
             stack_size: 0,
+            nodes: Vec::new(),
+            token_queue,
         }
     }
 
@@ -92,49 +116,149 @@ impl Parser {
     }
 
     // program = stmt*
-    pub fn program(&mut self, token_queue: &mut TokenQueue) -> Result<Vec<Node>, MyError> {
+    pub fn program(&mut self) -> Result<Vec<Node>, MyError> {
         let mut nodes = Vec::new();
-        while !token_queue.at_eof() {
-            nodes.push(self.stmt(token_queue)?);
+        while !self.token_queue.at_eof() {
+            nodes.push(self.stmt()?);
         }
         Ok(nodes)
     }
 
     // stmt = "return" expr ";"
-    //        | expr ";"
-    fn stmt(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        if token_queue.consume_reserve("return")? {
-            let node = Node::new_unary(NodeKind::Return, self.expr(token_queue)?);
-            token_queue.expect_reserve(";")?;
+    //      | "if" "(" expr ")" stmt ("else" stmt)?
+    //      | "for" "(" expr-stmt expr? ";" expr? ")" stmt
+    //      | "while" "(" expr ")" stmt
+    //      | "{" compound-stmt
+    //      | expr-stmt
+    fn stmt(&mut self) -> ParseResult {
+        // RETURN NODE
+        if self.token_queue.consume_reserve("return")? {
+            let node = Node::Return {
+                lhs: Some(Box::new(self.expr()?)),
+            };
+            self.token_queue.expect_reserve(";")?;
             return Ok(node);
         }
-        let node = self.expr(token_queue)?;
-        token_queue.expect_reserve(";")?;
-        Ok(Node::new_unary(NodeKind::ExprStmt, node))
+
+        //      | "if" "(" expr ")" stmt ("else" stmt)?
+        // IF NODE
+        if self.token_queue.consume_reserve("if")? {
+            self.token_queue.expect_reserve("(")?;
+            let cond = self.expr()?;
+            self.token_queue.expect_reserve(")")?;
+            let then = self.stmt()?;
+            let mut els = None;
+            if self.token_queue.consume_reserve("else")? {
+                els = Some(Box::new(self.stmt()?));
+            }
+            return Ok(Node::If {
+                cond: Box::new(cond),
+                then: Some(Box::new(then)),
+                els,
+            });
+        }
+
+        //      | "for" "(" expr-stmt expr? ";" expr? ")" stmt
+        // FOR NODE
+        if self.token_queue.consume_reserve("for")? {
+            self.token_queue.expect_reserve("(")?;
+            let init = self.expr_stmt()?;
+            let cond = if self.token_queue.consume_reserve(";")? {
+                None
+            } else {
+                let cond = self.expr()?;
+                self.token_queue.expect_reserve(";")?;
+                Some(Box::new(cond))
+            };
+            let inc = if self.token_queue.consume_reserve(")")? {
+                None
+            } else {
+                let node = self.expr()?;
+                self.token_queue.expect_reserve(")")?;
+                Some(Box::new(node))
+            };
+            let then = self.stmt()?;
+            return Ok(Node::For {
+                init: Some(Box::new(init)),
+                cond,
+                inc,
+                then: Some(Box::new(then)),
+            });
+        }
+
+        //      | "while" "(" expr ")" stmt
+        // WHILE NODE
+        if self.token_queue.consume_reserve("while")? {
+            self.token_queue.expect_reserve("(")?;
+            let cond = self.expr()?;
+            self.token_queue.expect_reserve(")")?;
+            let then = self.stmt()?;
+            return Ok(Node::For {
+                init: None,
+                inc: None,
+                cond: Some(Box::new(cond)),
+                then: Some(Box::new(then)),
+            });
+        }
+
+        // block node
+        if self.token_queue.consume_reserve("{")? {
+            return self.compound_stmt();
+        }
+        return self.expr_stmt();
     }
 
+    // compound-stmt = stmt* "}"
+    fn compound_stmt(&mut self) -> ParseResult {
+        let mut nodes = Vec::new();
+        while !self.token_queue.consume_reserve("}")? {
+            nodes.push(self.stmt()?);
+        }
+        Ok(Node::Block { nodes })
+    }
+
+    // expr-stmt = expr? ";"
+    fn expr_stmt(&mut self) -> ParseResult {
+        if self.token_queue.consume_reserve(";")? {
+            return Ok(Node::Block { nodes: Vec::new() });
+        };
+        let node = self.expr()?;
+        self.token_queue.expect_reserve(";")?;
+        return Ok(Node::ExprStmt {
+            expr: Box::new(node),
+        });
+    }
     // expr = assign
-    fn expr(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        self.assign(token_queue)
+    fn expr(&mut self) -> ParseResult {
+        self.assign()
     }
 
     // assign = equality ("=" assign)?
-    fn assign(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        let mut node = self.equality(token_queue)?;
-        if token_queue.consume_reserve("=")? {
-            node = Node::new_binary(NodeKind::Assign, node, self.assign(token_queue)?);
+    fn assign(&mut self) -> ParseResult {
+        let mut node = self.equality()?;
+        if self.token_queue.consume_reserve("=")? {
+            node = Node::Assign {
+                lhs: Box::new(node),
+                rhs: Box::new(self.assign()?),
+            };
         }
         Ok(node)
     }
 
     // equality = relational ("==" relational | "!=" relational)*
-    fn equality(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        let mut node = self.relational(token_queue)?;
+    fn equality(&mut self) -> ParseResult {
+        let mut node = self.relational()?;
         loop {
-            if token_queue.consume_reserve("==")? {
-                node = Node::new_binary(NodeKind::Eq, node, self.relational(token_queue)?);
-            } else if token_queue.consume_reserve("!=")? {
-                node = Node::new_binary(NodeKind::Ne, node, self.relational(token_queue)?);
+            if self.token_queue.consume_reserve("==")? {
+                node = Node::Eq {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.relational()?),
+                };
+            } else if self.token_queue.consume_reserve("!=")? {
+                node = Node::Ne {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.relational()?),
+                };
             } else {
                 return Ok(node);
             }
@@ -142,17 +266,29 @@ impl Parser {
     }
 
     // relational = add ("<" add | "<=" add | ">" add | ">=" add)*
-    fn relational(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        let mut node = self.add(token_queue)?;
+    fn relational(&mut self) -> ParseResult {
+        let mut node = self.add()?;
         loop {
-            if token_queue.consume_reserve("<")? {
-                node = Node::new_binary(NodeKind::Lt, node, self.add(token_queue)?);
-            } else if token_queue.consume_reserve("<=")? {
-                node = Node::new_binary(NodeKind::Le, node, self.add(token_queue)?);
-            } else if token_queue.consume_reserve(">")? {
-                node = Node::new_binary(NodeKind::Lt, self.add(token_queue)?, node);
-            } else if token_queue.consume_reserve(">=")? {
-                node = Node::new_binary(NodeKind::Le, self.add(token_queue)?, node);
+            if self.token_queue.consume_reserve("<")? {
+                node = Node::Lt {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.add()?),
+                };
+            } else if self.token_queue.consume_reserve("<=")? {
+                node = Node::Le {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.add()?),
+                };
+            } else if self.token_queue.consume_reserve(">")? {
+                node = Node::Lt {
+                    lhs: Box::new(self.add()?),
+                    rhs: Box::new(node),
+                };
+            } else if self.token_queue.consume_reserve(">=")? {
+                node = Node::Le {
+                    lhs: Box::new(self.add()?),
+                    rhs: Box::new(node),
+                };
             } else {
                 return Ok(node);
             }
@@ -160,26 +296,38 @@ impl Parser {
     }
 
     // add = mul ("+" mul | "-" mul)*
-    fn add(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        let mut node = self.mul(token_queue)?;
+    fn add(&mut self) -> ParseResult {
+        let mut node = self.mul()?;
         loop {
-            if token_queue.consume_reserve("+")? {
-                node = Node::new_binary(NodeKind::Add, node, self.mul(token_queue)?);
-            } else if token_queue.consume_reserve("-")? {
-                node = Node::new_binary(NodeKind::Sub, node, self.mul(token_queue)?);
+            if self.token_queue.consume_reserve("+")? {
+                node = Node::Add {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.mul()?),
+                };
+            } else if self.token_queue.consume_reserve("-")? {
+                node = Node::Sub {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.mul()?),
+                };
             } else {
                 return Ok(node);
             }
         }
     }
     // mul = unary ("*" unary | "/" unary)*
-    fn mul(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        let mut node = self.unary(token_queue)?;
+    fn mul(&mut self) -> ParseResult {
+        let mut node = self.unary()?;
         loop {
-            if token_queue.consume_reserve("*")? {
-                node = Node::new_binary(NodeKind::Mul, node, self.unary(token_queue)?);
-            } else if token_queue.consume_reserve("/")? {
-                node = Node::new_binary(NodeKind::Div, node, self.unary(token_queue)?);
+            if self.token_queue.consume_reserve("*")? {
+                node = Node::Mul {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.unary()?),
+                };
+            } else if self.token_queue.consume_reserve("/")? {
+                node = Node::Div {
+                    lhs: Box::new(node),
+                    rhs: Box::new(self.unary()?),
+                };
             } else {
                 return Ok(node);
             }
@@ -188,29 +336,31 @@ impl Parser {
 
     // unary = ("+" | "-")? unary
     //       | primary
-    fn unary(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        if token_queue.consume_reserve("+")? {
-            return self.unary(token_queue);
+    fn unary(&mut self) -> ParseResult {
+        if self.token_queue.consume_reserve("+")? {
+            return self.unary();
         }
-        if token_queue.consume_reserve("-")? {
-            let node = Node::new_binary(NodeKind::Neg, Node::new_num(0), self.unary(token_queue)?);
+        if self.token_queue.consume_reserve("-")? {
+            let node = Node::Neg {
+                lhs: Box::new(self.unary()?),
+            };
             return Ok(node);
         }
-        return self.primary(token_queue);
+        return self.primary();
     }
 
     // primary = "(" expr ")" | ident | num
-    fn primary(&mut self, token_queue: &mut TokenQueue) -> ParseResult {
-        if token_queue.consume_reserve("(")? {
-            let node = self.expr(token_queue)?;
-            token_queue.expect_reserve(")")?;
+    fn primary(&mut self) -> ParseResult {
+        if self.token_queue.consume_reserve("(")? {
+            let node = self.expr()?;
+            self.token_queue.expect_reserve(")")?;
             return Ok(node);
         }
-        if let Ok(Some(name)) = token_queue.consume_ident() {
+        if let Ok(Some(name)) = self.token_queue.consume_ident() {
             self.push_var(name.clone());
             Ok(Node::new_var(name))
         } else {
-            Ok(Node::new_num(token_queue.except_num()?))
+            Ok(Node::new_num(self.token_queue.except_num()?))
         }
     }
 
@@ -219,7 +369,7 @@ impl Parser {
         self.stack_size = Self::align_to(offset, 16);
         for (i, name) in self.locals_dequeue.iter().enumerate() {
             let v = self.locals.get_mut(name).expect("local variable get error");
-            *v = (i+1) * 8;
+            *v = (i + 1) * 8;
         }
     }
 

@@ -34,7 +34,7 @@ impl TokenQueue {
             Ok(())
         } else {
             Err(MyError {
-                info: format!("expected '{}'", op),
+                info: format!("expected '{}', current op: {:?}", op, self.0),
             })
         }
     }
@@ -81,10 +81,7 @@ impl TokenQueue {
     }
 
     fn is_alpha(c: char) -> bool {
-        match c {
-            'a'..='z' | 'A'..='Z' | '_' => true,
-            _ => false,
-        }
+        matches!(c, 'a'..='z' | 'A'..='Z' | '_')
     }
 
     fn is_alpha_num(c: char) -> bool {
@@ -129,11 +126,6 @@ impl TokenQueue {
             return None;
         }
 
-        if *i + 5 < s.len() && &s[*i..*i + 6] == "return" {
-            *i += 6;
-            return Some("return".to_string());
-        }
-
         if *i + 1 < s.len() {
             let double_rv = match &s[*i..*i + 2] {
                 "==" => Some("==".to_string()),
@@ -151,7 +143,7 @@ impl TokenQueue {
             return None;
         };
         match c {
-            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' | ';' | '=' => {
+            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' | ';' | '=' | '{' | '}' => {
                 *i += 1;
                 return Some(c.to_string());
             }
@@ -203,7 +195,16 @@ impl TokenQueue {
         }
 
         if let Some(ident) = self.extract_ident(s, i) {
-            self.0.push_back(Token::TkIdent { name: ident });
+            match ident.as_str() {
+                key @ ("return" | "if" | "else" | "for" | "while") => {
+                    self.0.push_back(Token::TkReserved {
+                        keyword: key.to_string(),
+                    });
+                }
+                _ => {
+                    self.0.push_back(Token::TkIdent { name: ident });
+                }
+            }
             return Ok(());
         }
 
