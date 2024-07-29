@@ -44,6 +44,12 @@ pub enum Node {
         lhs: Box<Node>,
         rhs: Box<Node>,
     }, // =
+    Addr {
+        lhs: Box<Node>,
+    }, // unary &
+    Deref {
+        lhs: Box<Node>,
+    }, // unary *
     Return {
         lhs: Option<Box<Node>>,
     }, // "return"
@@ -66,10 +72,17 @@ pub enum Node {
     }, // Expression statement
     Var {
         name: String,
+        r#type: Type,
     }, // Local variable
     Num {
         val: i32,
     }, // Integer
+}
+
+#[derive(PartialEq, Debug, Clone)]
+enum Type {
+    I32,
+    Ptr { base: Box<Type> },
 }
 
 type ParseResult = Result<Node, MyError>;
@@ -82,15 +95,6 @@ pub struct Parser {
     pub stack_size: usize,
     pub nodes: Vec<Node>,
     pub token_queue: TokenQueue,
-}
-
-impl Node {
-    fn new_num(val: i32) -> Self {
-        Node::Num { val }
-    }
-    fn new_var(name: String) -> Self {
-        Node::Var { name }
-    }
 }
 
 impl Parser {
@@ -113,6 +117,69 @@ impl Parser {
             _ => {}
         };
         self.locals_dequeue.len() * 8
+    }
+
+    // declspec = "int"
+    fn declspec(&mut self) -> Result<Type, MyError> {
+        self.token_queue.expect_reserve("int")?;
+        Ok(Type::I32)
+    }
+
+    // declarator = "*"* ident
+    fn declarator(&mut self, base_type: Type) -> ParseResult {
+        let mut num = 0;
+        while self.token_queue.consume_reserve("*")? {
+            num += 1;
+        }
+        if let Some(name) = self.token_queue.consume_ident()? {
+            let r#type = if num > 0 {
+                let mut t = Type::Ptr {
+                    base: Box::new(base_type),
+                };
+                for _ in 0..num - 1 {
+                    t = Type::Ptr { base: Box::new(t) }
+                }
+                t
+            } else {
+                Type::I32
+            };
+
+            Ok(Node::Var { name, r#type })
+        } else {
+            Err(MyError {
+                info: "expect a variable name".to_string(),
+            })
+        }
+    }
+
+    //declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+    fn declaration(&mut self) -> ParseResult {
+        let base_type = self.declspec()?;
+        let mut head = true;
+        let mut nodes = Vec::new();
+        while !self.token_queue.consume_reserve(";")? {
+            if !head {
+                self.token_queue.expect_reserve(",")?;
+            }
+            if head {
+                head = false;
+            }
+
+            let declarator = self.declarator(base_type.clone())?;
+            if !self.token_queue.consume_reserve("=")? {
+                // TODO: support initialization variable use empty value
+                continue;
+            }
+            let assign_node = Node::Assign {
+                lhs: Box::new(declarator),
+                rhs: Box::new(self.expr()?),
+            };
+            let node = Node::ExprStmt {
+                expr: Box::new(assign_node),
+            };
+            nodes.push(node);
+        }
+        return Ok(Node::Block { nodes });
     }
 
     // program = stmt*
@@ -208,11 +275,16 @@ impl Parser {
         return self.expr_stmt();
     }
 
-    // compound-stmt = stmt* "}"
+    // compound-stmt = (declaration | stmt)* "}"
     fn compound_stmt(&mut self) -> ParseResult {
         let mut nodes = Vec::new();
         while !self.token_queue.consume_reserve("}")? {
-            nodes.push(self.stmt()?);
+            let node = if self.token_queue.is_reserve("int") {
+                self.declaration()?
+            } else {
+                self.stmt()?
+            };
+            nodes.push(node);
         }
         Ok(Node::Block { nodes })
     }
@@ -295,6 +367,17 @@ impl Parser {
         }
     }
 
+    // for support number + pointer
+    // Canonicalize `num + ptr` to `ptr + num`.
+    fn new_add() -> ParseResult{
+        todo!()
+    }
+
+    // for support pointer - pointer and pointer - number
+    fn new_sub() -> ParseResult{
+        todo!()
+    }
+    
     // add = mul ("+" mul | "-" mul)*
     fn add(&mut self) -> ParseResult {
         let mut node = self.mul()?;
@@ -334,7 +417,7 @@ impl Parser {
         }
     }
 
-    // unary = ("+" | "-")? unary
+    // unary = ("+" | "-" | "*" | "&") unary
     //       | primary
     fn unary(&mut self) -> ParseResult {
         if self.token_queue.consume_reserve("+")? {
@@ -342,6 +425,18 @@ impl Parser {
         }
         if self.token_queue.consume_reserve("-")? {
             let node = Node::Neg {
+                lhs: Box::new(self.unary()?),
+            };
+            return Ok(node);
+        }
+        if self.token_queue.consume_reserve("*")? {
+            let node = Node::Deref {
+                lhs: Box::new(self.unary()?),
+            };
+            return Ok(node);
+        }
+        if self.token_queue.consume_reserve("&")? {
+            let node = Node::Addr {
                 lhs: Box::new(self.unary()?),
             };
             return Ok(node);
@@ -358,9 +453,15 @@ impl Parser {
         }
         if let Ok(Some(name)) = self.token_queue.consume_ident() {
             self.push_var(name.clone());
-            Ok(Node::new_var(name))
+            // TODO: add var type
+            Ok(Node::Var {
+                name,
+                r#type: Type::I32,
+            })
         } else {
-            Ok(Node::new_num(self.token_queue.except_num()?))
+            Ok(Node::Num {
+                val: self.token_queue.expect_num()?,
+            })
         }
     }
 

@@ -4,10 +4,10 @@ use std::ops::Index;
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    TkReserved { keyword: String },  // Keywords or punctuators
-    TkNum { raw: String, val: i32 }, // Integer literals
-    TkIdent { name: String },        // Identifiers
-    TkEof,                           // End-of-file markers
+    Reserved { keyword: String },  // Keywords or punctuators
+    Num { raw: String, val: i32 }, // Integer literals
+    Ident { name: String },        // Identifiers
+    Eof,                           // End-of-file markers
 }
 
 #[derive(Debug)]
@@ -21,26 +21,31 @@ impl Index<usize> for TokenQueue {
 }
 
 impl TokenQueue {
-    pub fn except_num(&mut self) -> Result<i32, MyError> {
+    pub fn expect_num(&mut self) -> Result<i32, MyError> {
         match self.0.pop_front() {
-            Some(Token::TkNum { val, .. }) => Ok(val),
+            Some(Token::Num { val, .. }) => Ok(val),
             _ => Err(MyError {
-                info: "wrong token need TkNum".to_string(),
+                info: format!("expected Num, current tokens: {:?}", self.0),
             })?,
         }
     }
+
     pub fn expect_reserve(&mut self, op: &str) -> Result<(), MyError> {
         if self.consume_reserve(op)? {
             Ok(())
         } else {
             Err(MyError {
-                info: format!("expected '{}', current op: {:?}", op, self.0),
+                info: format!("expected '{}', current tokens: {:?}", op, self.0),
             })
         }
     }
 
     pub fn at_eof(&self) -> bool {
-        self[0] == Token::TkEof
+        self[0] == Token::Eof
+    }
+
+    pub fn is_reserve(&self, op: &str) -> bool {
+        matches!(&self[0], Token::Reserved { keyword: raw } if raw == op)
     }
 
     pub fn consume_reserve(&mut self, op: &str) -> Result<bool, MyError> {
@@ -48,7 +53,7 @@ impl TokenQueue {
             None => Err(MyError {
                 info: format!("need {}, but no token left", op),
             }),
-            Some(Token::TkReserved { keyword: raw }) if raw == op => {
+            Some(Token::Reserved { keyword: raw }) if raw == op => {
                 self.0.pop_front();
                 Ok(true)
             }
@@ -62,14 +67,9 @@ impl TokenQueue {
                 info: "no token left".to_string(),
             });
         }
-        let found = {
-            match self.0.front() {
-                Some(Token::TkIdent { .. }) => true,
-                _ => false,
-            }
-        };
+        let found = matches!(self.0.front(), Some(Token::Ident { .. }));
         if found {
-            let Some(Token::TkIdent { name }) = self.0.pop_front() else {
+            let Some(Token::Ident { name }) = self.0.pop_front() else {
                 Err(MyError {
                     info: "pop token error".to_string(),
                 })?
@@ -143,7 +143,7 @@ impl TokenQueue {
             return None;
         };
         match c {
-            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' | ';' | '=' | '{' | '}' => {
+            '+' | '-' | '*' | '/' | '(' | ')' | '<' | '>' | ';' | '=' | '{' | '}' | '&' => {
                 *i += 1;
                 return Some(c.to_string());
             }
@@ -180,7 +180,7 @@ impl TokenQueue {
         self.skip_whitespace(s, i);
 
         if let Some(num) = self.extract_digit(s, i) {
-            self.0.push_back(Token::TkNum {
+            self.0.push_back(Token::Num {
                 val: num.parse::<i32>().map_err(|e| MyError {
                     info: e.to_string(),
                 })?,
@@ -190,19 +190,19 @@ impl TokenQueue {
         }
 
         if let Some(reserve) = self.extract_reserve(s, i) {
-            self.0.push_back(Token::TkReserved { keyword: reserve });
+            self.0.push_back(Token::Reserved { keyword: reserve });
             return Ok(());
         }
 
         if let Some(ident) = self.extract_ident(s, i) {
             match ident.as_str() {
-                key @ ("return" | "if" | "else" | "for" | "while") => {
-                    self.0.push_back(Token::TkReserved {
+                key @ ("return" | "if" | "else" | "for" | "while" | "int") => {
+                    self.0.push_back(Token::Reserved {
                         keyword: key.to_string(),
                     });
                 }
                 _ => {
-                    self.0.push_back(Token::TkIdent { name: ident });
+                    self.0.push_back(Token::Ident { name: ident });
                 }
             }
             return Ok(());
@@ -233,7 +233,7 @@ impl TokenQueue {
         while i < s.len() {
             rv.generate_token(s, &mut i)?;
         }
-        rv.0.push_back(Token::TkEof);
+        rv.0.push_back(Token::Eof);
         Ok(rv)
     }
 }
@@ -250,25 +250,25 @@ mod test {
             Ok(token_queue) => {
                 assert_eq!(
                     token_queue[0],
-                    Token::TkNum {
+                    Token::Num {
                         raw: "1".to_string(),
                         val: 1
                     }
                 );
                 assert_eq!(
                     token_queue[1],
-                    Token::TkReserved {
+                    Token::Reserved {
                         keyword: "+".to_string()
                     }
                 );
                 assert_eq!(
                     token_queue[2],
-                    Token::TkNum {
+                    Token::Num {
                         raw: "2".to_string(),
                         val: 2
                     }
                 );
-                assert_eq!(token_queue[3], Token::TkEof);
+                assert_eq!(token_queue[3], Token::Eof);
             }
             Err(e) => {
                 panic!("{:?}", e);
@@ -283,25 +283,25 @@ mod test {
             Ok(token_queue) => {
                 assert_eq!(
                     token_queue[0],
-                    Token::TkNum {
+                    Token::Num {
                         raw: "1".to_string(),
                         val: 1
                     }
                 );
                 assert_eq!(
                     token_queue[1],
-                    Token::TkReserved {
+                    Token::Reserved {
                         keyword: "+".to_string()
                     }
                 );
                 assert_eq!(
                     token_queue[2],
-                    Token::TkNum {
+                    Token::Num {
                         raw: "2".to_string(),
                         val: 2
                     }
                 );
-                assert_eq!(token_queue[3], Token::TkEof);
+                assert_eq!(token_queue[3], Token::Eof);
             }
             Err(e) => {
                 panic!("{:?}", e);
@@ -316,32 +316,32 @@ mod test {
                 assert_eq!(
                     token_queue.0,
                     vec![
-                        Token::TkNum {
+                        Token::Num {
                             raw: "12".to_string(),
                             val: 12
                         },
-                        Token::TkReserved {
+                        Token::Reserved {
                             keyword: "+".to_string()
                         },
-                        Token::TkNum {
+                        Token::Num {
                             raw: "34".to_string(),
                             val: 34
                         },
-                        Token::TkReserved {
+                        Token::Reserved {
                             keyword: "-".to_string()
                         },
-                        Token::TkNum {
+                        Token::Num {
                             raw: "5".to_string(),
                             val: 5
                         },
-                        Token::TkReserved {
+                        Token::Reserved {
                             keyword: "+".to_string()
                         },
-                        Token::TkNum {
+                        Token::Num {
                             raw: "2".to_string(),
                             val: 2
                         },
-                        Token::TkEof
+                        Token::Eof
                     ]
                 );
             }
@@ -359,25 +359,25 @@ mod test {
                 assert_eq!(
                     token_queue.0,
                     vec![
-                        Token::TkNum {
+                        Token::Num {
                             raw: "3".to_string(),
                             val: 3
                         },
-                        Token::TkReserved {
+                        Token::Reserved {
                             keyword: "+".to_string()
                         },
-                        Token::TkNum {
+                        Token::Num {
                             raw: "1".to_string(),
                             val: 1
                         },
-                        Token::TkReserved {
+                        Token::Reserved {
                             keyword: "*".to_string()
                         },
-                        Token::TkNum {
+                        Token::Num {
                             raw: "2".to_string(),
                             val: 2
                         },
-                        Token::TkEof,
+                        Token::Eof,
                     ]
                 );
             }
@@ -393,25 +393,25 @@ mod test {
         assert_eq!(
             token_queue.0,
             vec![
-                Token::TkNum {
+                Token::Num {
                     raw: "3".to_string(),
                     val: 3
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: "+".to_string()
                 },
-                Token::TkNum {
+                Token::Num {
                     raw: "1".to_string(),
                     val: 1
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: "==".to_string()
                 },
-                Token::TkNum {
+                Token::Num {
                     raw: "2".to_string(),
                     val: 2
                 },
-                Token::TkEof
+                Token::Eof
             ]
         );
     }
@@ -422,48 +422,48 @@ mod test {
         assert_eq!(
             token_queue.0,
             vec![
-                Token::TkIdent {
+                Token::Ident {
                     name: "foo123".to_string()
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: "=".to_string()
                 },
-                Token::TkNum {
+                Token::Num {
                     raw: "3".to_string(),
                     val: 3
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: ";".to_string()
                 },
-                Token::TkIdent {
+                Token::Ident {
                     name: "bar".to_string()
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: "=".to_string()
                 },
-                Token::TkNum {
+                Token::Num {
                     raw: "5".to_string(),
                     val: 5
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: ";".to_string()
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: "return".to_string()
                 },
-                Token::TkIdent {
+                Token::Ident {
                     name: "foo123".to_string()
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: "+".to_string()
                 },
-                Token::TkIdent {
+                Token::Ident {
                     name: "bar".to_string()
                 },
-                Token::TkReserved {
+                Token::Reserved {
                     keyword: ";".to_string()
                 },
-                Token::TkEof
+                Token::Eof
             ]
         );
     }

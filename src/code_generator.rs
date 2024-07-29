@@ -10,7 +10,7 @@ impl CodeGenerator {
     pub fn new(parser: Parser) -> CodeGenerator {
         Self {
             depth: 0,
-            counter: 1,
+            counter: 0,
             parser,
         }
     }
@@ -33,7 +33,7 @@ impl CodeGenerator {
         let Some(node) = node else {
             return;
         };
-        if let Node::Var { name } = &node {
+        if let Node::Var { name, .. } = &node {
             let offset = self.parser.locals.get(name).expect("name not found");
             println!("  lea -{}(%rbp), %rax", *offset)
         }
