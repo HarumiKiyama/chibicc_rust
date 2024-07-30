@@ -2,53 +2,65 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::{MyError, TokenQueue};
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Node {
     Add {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // +
 
     Sub {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // -
     Mul {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // *
     Div {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // /
     Neg {
         lhs: Box<Node>,
+        r#type: Type,
     }, // unary -
     Eq {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // ==
     Ne {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // !=
     Lt {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // <
     Le {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // <=
     Assign {
         lhs: Box<Node>,
         rhs: Box<Node>,
+        r#type: Type,
     }, // =
     Addr {
         lhs: Box<Node>,
+        r#type: Type,
     }, // unary &
     Deref {
         lhs: Box<Node>,
+        r#type: Type,
     }, // unary *
     Return {
         lhs: Option<Box<Node>>,
@@ -76,18 +88,83 @@ pub enum Node {
     }, // Local variable
     Num {
         val: i32,
+        r#type: Type,
     }, // Integer
 }
 
+impl Node {
+    pub fn is_add(&self) -> bool {
+        matches!(self, Self::Add { .. })
+    }
+
+    pub fn get_type(&self) -> Option<Type> {
+        match self {
+            Node::Var { r#type, .. }
+            | Node::Add { r#type, .. }
+            | Node::Sub { r#type, .. }
+            | Node::Mul { r#type, .. }
+            | Node::Div { r#type, .. }
+            | Node::Neg { r#type, .. }
+            | Node::Assign { r#type, .. }
+            | Node::Eq { r#type, .. }
+            | Node::Ne { r#type, .. }
+            | Node::Lt { r#type, .. }
+            | Node::Le { r#type, .. }
+            | Node::Num { r#type, .. }
+            | Node::Addr { r#type, .. }
+            | Node::Deref { r#type, .. } => Some(r#type.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn is_ptr_node(&self) -> bool {
+        match self {
+            Node::Var { r#type, .. }
+            | Node::Add { r#type, .. }
+            | Node::Sub { r#type, .. }
+            | Node::Mul { r#type, .. }
+            | Node::Div { r#type, .. }
+            | Node::Neg { r#type, .. }
+            | Node::Assign { r#type, .. }
+            | Node::Eq { r#type, .. }
+            | Node::Ne { r#type, .. }
+            | Node::Lt { r#type, .. }
+            | Node::Le { r#type, .. }
+            | Node::Num { r#type, .. }
+            | Node::Addr { r#type, .. }
+            | Node::Deref { r#type, .. } => match r#type {
+                Type::I32 => false,
+                Type::Ptr { .. } => true,
+            },
+            _ => false,
+        }
+    }
+    pub fn is_var(&self) -> bool {
+        matches!(self, Self::Var { .. })
+    }
+
+    pub fn is_num(&self) -> bool {
+        matches!(self, Self::Num { .. })
+    }
+
+    pub fn assign_type(&mut self) {}
+}
+
 #[derive(PartialEq, Debug, Clone)]
-enum Type {
+pub enum Type {
     I32,
     Ptr { base: Box<Type> },
 }
 
 type ParseResult = Result<Node, MyError>;
 
-type VarTable = HashMap<String, usize>; // variable name offset hashtable
+#[derive(Clone)]
+pub struct VarTableItem {
+    pub offset: usize,
+    pub r#type: Type,
+}
+
+type VarTable = HashMap<String, VarTableItem>; // variable name offset hashtable
 
 pub struct Parser {
     pub locals: VarTable,
@@ -107,12 +184,19 @@ impl Parser {
             token_queue,
         }
     }
+    fn find_var(&self, name: &String) -> Option<VarTableItem> {
+        self.locals.get(name).cloned()
+    }
 
-    fn push_var(&mut self, name: String) -> usize {
+    fn push_var(&mut self, name: String, r#type: Type) -> usize {
         match self.locals.get(&name) {
             None => {
                 self.locals_dequeue.push_front(name.clone());
-                self.locals.insert(name, self.locals_dequeue.len() * 8);
+                let item = VarTableItem {
+                    offset: self.locals_dequeue.len() * 8,
+                    r#type,
+                };
+                self.locals.insert(name, item);
             }
             _ => {}
         };
@@ -144,6 +228,7 @@ impl Parser {
                 Type::I32
             };
 
+            self.push_var(name.clone(), r#type.clone());
             Ok(Node::Var { name, r#type })
         } else {
             Err(MyError {
@@ -173,6 +258,7 @@ impl Parser {
             let assign_node = Node::Assign {
                 lhs: Box::new(declarator),
                 rhs: Box::new(self.expr()?),
+                r#type: base_type.clone(),
             };
             let node = Node::ExprStmt {
                 expr: Box::new(assign_node),
@@ -312,6 +398,7 @@ impl Parser {
             node = Node::Assign {
                 lhs: Box::new(node),
                 rhs: Box::new(self.assign()?),
+                r#type: node.get_type().expect("should have a type"),
             };
         }
         Ok(node)
@@ -325,11 +412,13 @@ impl Parser {
                 node = Node::Eq {
                     lhs: Box::new(node),
                     rhs: Box::new(self.relational()?),
+                    r#type: Type::I32,
                 };
             } else if self.token_queue.consume_reserve("!=")? {
                 node = Node::Ne {
                     lhs: Box::new(node),
                     rhs: Box::new(self.relational()?),
+                    r#type: Type::I32,
                 };
             } else {
                 return Ok(node);
@@ -345,21 +434,25 @@ impl Parser {
                 node = Node::Lt {
                     lhs: Box::new(node),
                     rhs: Box::new(self.add()?),
+                    r#type: Type::I32,
                 };
             } else if self.token_queue.consume_reserve("<=")? {
                 node = Node::Le {
                     lhs: Box::new(node),
                     rhs: Box::new(self.add()?),
+                    r#type: Type::I32,
                 };
             } else if self.token_queue.consume_reserve(">")? {
                 node = Node::Lt {
                     lhs: Box::new(self.add()?),
                     rhs: Box::new(node),
+                    r#type: Type::I32,
                 };
             } else if self.token_queue.consume_reserve(">=")? {
                 node = Node::Le {
                     lhs: Box::new(self.add()?),
                     rhs: Box::new(node),
+                    r#type: Type::I32,
                 };
             } else {
                 return Ok(node);
@@ -367,17 +460,102 @@ impl Parser {
         }
     }
 
-    // for support number + pointer
     // Canonicalize `num + ptr` to `ptr + num`.
-    fn new_add() -> ParseResult{
-        todo!()
+    fn new_add(&self, mut node: Node) -> Result<Node, MyError> {
+        let Node::Add {
+            ref mut lhs,
+            ref mut rhs,
+            ..
+        } = node
+        else {
+            return Err(MyError {
+                info: format!(
+                    "not a add node, current node: {:?}, current token: {:?}",
+                    node, self.token_queue
+                ),
+            });
+        };
+        if lhs.is_ptr_node() && rhs.is_ptr_node() {
+            return Err(MyError {
+                info: format!(
+                    "two pointer add error, current node: {:?}, current token: {:?}",
+                    node, self.token_queue
+                ),
+            });
+        }
+        if (lhs.is_num() && rhs.is_var()) || rhs.is_ptr_node() {
+            std::mem::swap(lhs, rhs);
+            return Ok(node);
+        }
+
+        // ptr + num
+        if lhs.is_ptr_node() {
+            let new_rhs = Box::new(Node::Mul {
+                lhs: Box::new(*rhs.clone()),
+                rhs: Box::new(Node::Num {
+                    val: 8,
+                    r#type: Type::I32,
+                }),
+                r#type: Type::I32,
+            });
+            let _ = std::mem::replace(rhs, new_rhs);
+            return Ok(node);
+        }
+
+        return Ok(node);
     }
 
     // for support pointer - pointer and pointer - number
-    fn new_sub() -> ParseResult{
-        todo!()
+    fn new_sub(&self, node: Node) -> Result<Node, MyError> {
+        let Node::Sub {
+            ref lhs, ref rhs, ..
+        } = node
+        else {
+            return Err(MyError {
+                info: format!(
+                    "not a sub node, current node: {:?}, current token: {:?}",
+                    node, self.token_queue
+                ),
+            });
+        };
+        if rhs.is_ptr_node() && !lhs.is_ptr_node() {
+            return Err(MyError {
+                info: format!(
+                    "minus pointer error, current node: {:?}, current token : {:?}",
+                    node, self.token_queue
+                ),
+            });
+        }
+
+        if lhs.is_ptr_node() && rhs.is_ptr_node() {
+            let new_node = Node::Div {
+                lhs: Box::new(node),
+                rhs: Box::new(Node::Num {
+                    val: 8,
+                    r#type: Type::I32,
+                }),
+                r#type: Type::I32,
+            };
+            return Ok(new_node);
+        }
+        if lhs.is_ptr_node() {
+            let new_rhs = Box::new(Node::Mul {
+                lhs: Box::new(*rhs.clone()),
+                rhs: Box::new(Node::Num {
+                    val: 8,
+                    r#type: Type::I32,
+                }),
+                r#type: Type::I32,
+            });
+            return Ok(Node::Sub {
+                lhs: Box::new(*lhs.clone()),
+                rhs: new_rhs,
+                r#type: lhs.get_type().expect("should have a type"),
+            });
+        }
+        return Ok(node);
     }
-    
+
     // add = mul ("+" mul | "-" mul)*
     fn add(&mut self) -> ParseResult {
         let mut node = self.mul()?;
@@ -386,12 +564,16 @@ impl Parser {
                 node = Node::Add {
                     lhs: Box::new(node),
                     rhs: Box::new(self.mul()?),
+                    r#type: node.get_type().expect("should have a type"),
                 };
+                node = self.new_add(node)?;
             } else if self.token_queue.consume_reserve("-")? {
                 node = Node::Sub {
                     lhs: Box::new(node),
                     rhs: Box::new(self.mul()?),
+                    r#type: node.get_type().expect("should have a type"),
                 };
+                node = self.new_sub(node)?;
             } else {
                 return Ok(node);
             }
@@ -405,11 +587,13 @@ impl Parser {
                 node = Node::Mul {
                     lhs: Box::new(node),
                     rhs: Box::new(self.unary()?),
+                    r#type: node.get_type().expect("should have a type"),
                 };
             } else if self.token_queue.consume_reserve("/")? {
                 node = Node::Div {
                     lhs: Box::new(node),
                     rhs: Box::new(self.unary()?),
+                    r#type: node.get_type().expect("should have a type"),
                 };
             } else {
                 return Ok(node);
@@ -424,20 +608,25 @@ impl Parser {
             return self.unary();
         }
         if self.token_queue.consume_reserve("-")? {
+            let lhs = self.unary()?;
             let node = Node::Neg {
-                lhs: Box::new(self.unary()?),
+                lhs: Box::new(lhs),
+                r#type: lhs.get_type().expect("should have a type"),
             };
             return Ok(node);
         }
         if self.token_queue.consume_reserve("*")? {
+            let lhs = self.unary()?;
             let node = Node::Deref {
                 lhs: Box::new(self.unary()?),
+                r#type: todo!("complete this")
             };
             return Ok(node);
         }
         if self.token_queue.consume_reserve("&")? {
             let node = Node::Addr {
                 lhs: Box::new(self.unary()?),
+                r#type: todo!("complete this")
             };
             return Ok(node);
         }
@@ -452,15 +641,17 @@ impl Parser {
             return Ok(node);
         }
         if let Ok(Some(name)) = self.token_queue.consume_ident() {
-            self.push_var(name.clone());
-            // TODO: add var type
+            let item = self.find_var(&name).ok_or(MyError {
+                info: format!("undefined variable: {}", name),
+            })?;
             Ok(Node::Var {
                 name,
-                r#type: Type::I32,
+                r#type: item.r#type,
             })
         } else {
             Ok(Node::Num {
                 val: self.token_queue.expect_num()?,
+                r#type: Type::I32
             })
         }
     }
@@ -470,7 +661,7 @@ impl Parser {
         self.stack_size = Self::align_to(offset, 16);
         for (i, name) in self.locals_dequeue.iter().enumerate() {
             let v = self.locals.get_mut(name).expect("local variable get error");
-            *v = (i + 1) * 8;
+            v.offset = (i + 1) * 8;
         }
     }
 

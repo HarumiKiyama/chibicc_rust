@@ -29,13 +29,21 @@ impl CodeGenerator {
         self.depth -= 1;
     }
 
-    fn gen_addr(&self, node: Option<&Node>) {
+    fn gen_addr(&mut self, node: Option<&Node>) {
         let Some(node) = node else {
             return;
         };
-        if let Node::Var { name, .. } = &node {
-            let offset = self.parser.locals.get(name).expect("name not found");
-            println!("  lea -{}(%rbp), %rax", *offset)
+        match node {
+            Node::Var { name, .. } => {
+                let item = self.parser.locals.get(name).expect("name not found");
+                println!("  lea -{}(%rbp), %rax", item.offset);
+            }
+            Node::Deref { lhs } => {
+                self.gen_expr(Some(lhs.as_ref()));
+            }
+            _ => {
+                panic!("not a lvalue: {:?}", node)
+            }
         }
     }
 
@@ -77,6 +85,15 @@ impl CodeGenerator {
                 println!("  mov (%rax), %rax");
                 return;
             }
+            Node::Deref { lhs } => {
+                self.gen_expr(Some(lhs.as_ref()));
+                println!("  mov (%rax), %rax");
+                return;
+            }
+            Node::Addr { lhs } => {
+                self.gen_addr(Some(lhs.as_ref()));
+                return;
+            }
             Node::Assign { lhs, rhs } => {
                 self.gen_addr(Some(lhs.as_ref()));
                 self.push();
@@ -102,7 +119,7 @@ impl CodeGenerator {
                 self.pop("rdi");
             }
             _ => {
-                panic!("invalid expression")
+                panic!("invalid expression, {:?}", node)
             }
         }
         let print_eq = |eq_str: &str| {
@@ -137,7 +154,7 @@ impl CodeGenerator {
                 print_eq("  setle %al");
             }
             _ => {
-                panic!("invalid expression")
+                panic!("invalid expression, node: {:?}", node)
             }
         }
     }
